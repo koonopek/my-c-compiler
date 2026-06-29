@@ -35,6 +35,7 @@ enum TokenKind {
     Identifier,
     // maybe stupid
     End,
+    Comment,
 }
 
 #[derive(PartialEq, Debug)]
@@ -113,6 +114,12 @@ impl Token {
             value: vec![],
         }
     }
+    fn comment(value: Vec<char>) -> Token {
+        Token {
+            kind: TokenKind::Comment,
+            value,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -133,6 +140,44 @@ fn is_special_identifier(word: &Vec<char>) -> Option<TokenKind> {
     }
 }
 
+fn collect_comment(prev_char: char, chars: &mut Peekable<Chars>) -> Result<Token, LexerErr> {
+    let mut word: Vec<char> = vec![prev_char];
+
+    return loop {
+        let c_opt = chars.peek();
+
+        match c_opt {
+            Some(c) if *c != '\n' => {
+                word.push(*c);
+                chars.next();
+            }
+            Some(_) | None => {
+                break Ok(Token::comment(word));
+            }
+        }
+    };
+}
+
+fn collect_block_comment(prev_char: char, chars: &mut Peekable<Chars>) -> Result<Token, LexerErr> {
+    let mut word: Vec<char> = vec![prev_char];
+    let mut prev = prev_char;
+    loop {
+        match chars.next() {
+            Some(c) => {
+                word.push(c);
+                if prev == '*' && c == '/' {
+                    break Ok(Token::comment(word));
+                }
+                prev = c;
+            }
+            None => {
+                break Err(LexerErr::from_msg(String::from(
+                    "unfinished block comment missing */",
+                )));
+            }
+        }
+    }
+}
 fn collect_alphabetic(prev_char: char, chars: &mut Peekable<Chars>) -> Result<Token, LexerErr> {
     let mut word: Vec<char> = vec![prev_char];
 
@@ -166,8 +211,9 @@ fn collect_numeric(prev_char: char, chars: &mut Peekable<Chars>) -> Result<Token
 
         match c_opt {
             Some(c) if !DELIMITER.contains(c) && !c.is_whitespace() => {
-                // println!("will consume {:?}", chars.peek());
-                // we are sure we can unwrapped cause we have peek'ed and checked
+                if !c.is_numeric() {
+                    break Err(LexerErr::from_msg(format!("{} is not valid numeric", c)));
+                }
                 word.push(*c);
                 chars.next();
             }
@@ -189,6 +235,8 @@ fn lex(to_lex: String) -> Result<Vec<Token>, LexerErr> {
             Some('(') => Ok(Token::left_parent()),
             Some(')') => Ok(Token::right_parent()),
             Some(';') => Ok(Token::semicolon()),
+            Some('/') if chars.peek() == Some(&'/') => collect_comment('/', &mut chars),
+            Some('/') if chars.peek() == Some(&'*') => collect_block_comment('/', &mut chars),
             Some(c) if c.is_whitespace() => Ok(Token::whitespace(vec![c])),
             Some(c) if c.is_alphabetic() => collect_alphabetic(c.clone(), &mut chars),
             Some(c) if c.is_numeric() => collect_numeric(c.clone(), &mut chars),
@@ -216,12 +264,12 @@ fn lex(to_lex: String) -> Result<Vec<Token>, LexerErr> {
 }
 
 fn main() {
-    let args: Vec<String> = args().collect();
-    if args.len() != 2 {
-        eprintln!("usage: my-c-compiler <input.c>");
+    let cli_args: Vec<String> = args().skip(1).collect();
+    if cli_args.is_empty() {
+        eprintln!("usage: my-c-compiler [options] <input.c>");
         std::process::exit(1);
     }
-    let input_path = &args[1];
+    let input_path = cli_args.last().unwrap();
 
     let to_compile = fs::read_to_string(input_path)
         .expect(format!("failed to read file {}", input_path).as_ref());
