@@ -1,5 +1,5 @@
 use std::fmt;
-use std::{char, env::args, error::Error, fs, iter::Peekable, str::Chars};
+use std::{char, env::args, fs, iter::Peekable, str::Chars};
 
 // const KEYWORDS: [&str; 3] = [
 //     Open brace {
@@ -22,7 +22,7 @@ const DELIMITER: [char; 5] = [
         // Integer literal [0-9]+
 ];
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 enum TokenKind {
     LeftBrace,
     RightBrace,
@@ -38,7 +38,7 @@ enum TokenKind {
     Comment,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 struct Token {
     kind: TokenKind,
     value: Vec<char>,
@@ -47,7 +47,6 @@ struct Token {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value: String = self.value.iter().collect();
-
         write!(f, "{:?} {}", self.kind, value)
     }
 }
@@ -83,12 +82,12 @@ impl Token {
             value: vec![';'],
         }
     }
-    fn return_keyword() -> Token {
-        Token {
-            kind: TokenKind::Return,
-            value: vec!['r', 'e', 't', 'u', 'r', 'n'],
-        }
-    }
+    // fn return_keyword() -> Token {
+    //     Token {
+    //         kind: TokenKind::Return,
+    //         value: vec!['r', 'e', 't', 'u', 'r', 'n'],
+    //     }
+    // }
     fn identifier(value: Vec<char>) -> Token {
         Token {
             kind: TokenKind::Identifier,
@@ -111,7 +110,7 @@ impl Token {
     fn whitespace(value: Vec<char>) -> Token {
         Token {
             kind: TokenKind::Whitespace,
-            value: vec![],
+            value,
         }
     }
     fn comment(value: Vec<char>) -> Token {
@@ -248,8 +247,12 @@ fn lex(to_lex: String) -> Result<Vec<Token>, LexerErr> {
             Err(e) => return Err(e),
             Ok(t) => {
                 let is_end = t.kind == TokenKind::End;
-                // lets skip whitespaces for now
+                // lets skip whitespaces
                 if t.kind == TokenKind::Whitespace {
+                    continue;
+                }
+                // lets skip comments
+                if t.kind == TokenKind::Comment {
                     continue;
                 }
                 tokens.push(t);
@@ -263,6 +266,163 @@ fn lex(to_lex: String) -> Result<Vec<Token>, LexerErr> {
     Ok(tokens)
 }
 
+// AST
+#[derive(Debug, PartialEq)]
+enum Exp {
+    Const(u64),
+}
+#[derive(Debug, PartialEq)]
+enum Statement {
+    Return(Exp),
+}
+
+fn chars_to_usize(chars: &[char]) -> Result<u64, ParserErr> {
+    let mut value = 0u64;
+    for c in chars {
+        let digit = if let Some(d) = c.to_digit(10) {
+            d as u64
+        } else {
+            return Err(ParserErr(format!("invalid digit {:?}", chars)));
+        };
+        value = value * 10 + digit;
+    }
+    Ok(value)
+}
+
+impl Statement {
+    fn from(cursor: &mut TokensCursor) -> Result<Statement, ParserErr> {
+        cursor.expect(TokenKind::Return)?;
+        let int = cursor.expect(TokenKind::Integer)?;
+        let int_value = chars_to_usize(&int.value)?;
+        cursor.expect(TokenKind::Semicolon)?;
+
+        return Ok(Statement::Return(Exp::Const(int_value)));
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Func {
+    name: String,
+    return_type: Type,
+    // args
+    // return type?
+    body: Statement,
+}
+
+#[derive(Debug, PartialEq)]
+enum Type {
+    Int,
+}
+
+impl Func {
+    fn from(cursor: &mut TokensCursor) -> Result<Func, ParserErr> {
+        let return_type = cursor.expect(TokenKind::Identifier)?;
+        // at the moment we accept only int, later we can create some class wrapper like Type
+        if return_type.value != ['i', 'n', 't'] {
+            return Err(ParserErr(format!(
+                "unsupported data type {:?}",
+                return_type.value
+            )));
+        }
+
+        let name = cursor.expect(TokenKind::Identifier)?;
+
+        cursor.expect(TokenKind::LeftParen)?;
+
+        // add support for different args than void
+        let void = cursor.expect(TokenKind::Identifier)?;
+        if void.value != ['v', 'o', 'i', 'd'] {
+            return Err(ParserErr(format!(
+                "unsupported data type {:?}",
+                return_type.value
+            )));
+        }
+
+        cursor.expect(TokenKind::RightParen)?;
+        cursor.expect(TokenKind::LeftBrace)?;
+
+        let stm = Statement::from(cursor)?;
+        cursor.expect(TokenKind::RightBrace)?;
+
+        Ok(Func {
+            return_type: Type::Int,
+            name: name.value.iter().collect(),
+            body: stm,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Prog {
+    function: Func,
+}
+
+#[derive(Debug)]
+struct ParserErr(String);
+
+struct TokensCursor<'a> {
+    tokens: &'a [Token],
+    position: usize,
+}
+
+impl<'a> TokensCursor<'a> {
+    fn new(tokens: &'a [Token]) -> TokensCursor<'a> {
+        TokensCursor {
+            tokens,
+            position: 0,
+        }
+    }
+
+    // fn peek(&self) -> Option<&'a Token> {
+    //     self.tokens.get(self.position)
+    // }
+
+    fn next(&mut self) -> Option<&'a Token> {
+        let token = self.tokens.get(self.position);
+        self.position += 1;
+        token
+    }
+
+    fn expect(&mut self, kind: TokenKind) -> Result<&'a Token, ParserErr> {
+        let t = self.next();
+
+        match t {
+            Some(t) => {
+                if t.kind == kind {
+                    return Ok(t);
+                }
+                return Err(ParserErr(format!("Expected {:?} find {:?}", kind, t.kind)));
+            }
+            None => return Err(ParserErr(format!("Expected {:?} find EOF", kind))),
+        }
+    }
+
+    fn expect_one_of(&mut self, kind: Vec<TokenKind>) -> Result<&'a Token, ParserErr> {
+        let t = self.next();
+
+        match t {
+            Some(t) => {
+                if kind.contains(&t.kind) {
+                    return Ok(t);
+                }
+                return Err(ParserErr(format!("Expected {:?} find {:?}", kind, t.kind)));
+            }
+            None => return Err(ParserErr(format!("Expected {:?} find EOF", kind))),
+        }
+    }
+}
+
+fn ast(mut cursor: TokensCursor) -> Result<Prog, ParserErr> {
+    let prog = Prog {
+        function: Func::from(&mut cursor)?,
+    };
+
+    // hmm
+    cursor.expect(TokenKind::End)?;
+
+    return Ok(prog);
+}
+
 fn main() {
     let cli_args: Vec<String> = args().skip(1).collect();
     if cli_args.is_empty() {
@@ -274,11 +434,26 @@ fn main() {
     let to_compile = fs::read_to_string(input_path)
         .expect(format!("failed to read file {}", input_path).as_ref());
 
-    let tokens = lex(to_compile).unwrap();
+    let tokens = lex(to_compile).unwrap_or_else(|err| {
+        eprintln!("Lexer error: {}", err.msg);
+        std::process::exit(1);
+    });
 
+    println!("LEXING ...");
     for token in &tokens {
         println!("{}", token);
     }
+
+    let cursor = TokensCursor::new(&tokens);
+
+    let ast_tree = ast(cursor).unwrap_or_else(|err| {
+        eprintln!("Parser error: {}", err.0);
+        std::process::exit(1);
+    });
+
+    println!("PARSING ...",);
+    println!("AST TREE");
+    println!("{:?}", ast_tree);
 
     // println!("Compiled:");
     // println!("{}", compiled);
