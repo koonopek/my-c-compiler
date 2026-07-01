@@ -483,10 +483,12 @@ fn main() {
         std::process::exit(1);
     }
     let input_path = &cli_args[0];
-    let output_path = cli_args
-        .get(1)
-        .cloned()
-        .unwrap_or_else(|| input_path.strip_suffix(".c").unwrap_or(input_path).to_string());
+    let output_path = cli_args.get(1).cloned().unwrap_or_else(|| {
+        input_path
+            .strip_suffix(".c")
+            .unwrap_or(input_path)
+            .to_string()
+    });
     let asm_path = format!("{}.s", output_path);
 
     let to_compile = fs::read_to_string(input_path)
