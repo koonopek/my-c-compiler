@@ -1,4 +1,5 @@
 use std::fmt;
+use std::process::Command;
 use std::{char, env::args, fs, iter::Peekable, str::Chars};
 
 // const KEYWORDS: [&str; 3] = [
@@ -266,16 +267,6 @@ fn lex(to_lex: String) -> Result<Vec<Token>, LexerErr> {
     Ok(tokens)
 }
 
-// AST
-#[derive(Debug, PartialEq)]
-enum Exp {
-    Const(u64),
-}
-#[derive(Debug, PartialEq)]
-enum Statement {
-    Return(Exp),
-}
-
 fn chars_to_usize(chars: &[char]) -> Result<u64, ParserErr> {
     let mut value = 0u64;
     for c in chars {
@@ -289,6 +280,25 @@ fn chars_to_usize(chars: &[char]) -> Result<u64, ParserErr> {
     Ok(value)
 }
 
+// AST
+#[derive(Debug, PartialEq)]
+enum Exp {
+    Const(u64),
+}
+
+impl Exp {
+    fn to_code(self: &Self) -> Result<String, GenerateError> {
+        match self {
+            Exp::Const(exp) => return Ok(format!("mov w0, #{}", exp)),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Statement {
+    Return(Exp),
+}
+
 impl Statement {
     fn from(cursor: &mut TokensCursor) -> Result<Statement, ParserErr> {
         cursor.expect(TokenKind::Return)?;
@@ -298,6 +308,19 @@ impl Statement {
 
         return Ok(Statement::Return(Exp::Const(int_value)));
     }
+
+    fn to_code(self: &Self) -> Result<String, GenerateError> {
+        match self {
+            Statement::Return(exp) => {
+                let exp_code = exp.to_code()?;
+
+                return Ok(format!(
+                    "{exp_code}
+    ret"
+                ));
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -306,7 +329,7 @@ struct Func {
     return_type: Type,
     // args
     // return type?
-    body: Statement,
+    statement: Statement,
 }
 
 #[derive(Debug, PartialEq)]
@@ -347,9 +370,36 @@ impl Func {
         Ok(Func {
             return_type: Type::Int,
             name: name.value.iter().collect(),
-            body: stm,
+            statement: stm,
         })
     }
+
+    fn to_code(self: &Self) -> Result<String, GenerateError> {
+        let func_name = format!("_{}", self.name);
+        let stmt = self.statement.to_code()?;
+        return Ok(format!(
+            "{func_name}: 
+    {stmt}
+"
+        ));
+    }
+}
+
+#[derive(Debug)]
+struct GenerateError(String);
+
+fn generate_code(prog: Prog) -> Result<String, GenerateError> {
+    let mut func_name = String::new();
+    func_name.push_str("_");
+    func_name.push_str(&prog.function.name);
+
+    let preamble = format!(".global {func_name}");
+    let func_code = prog.function.to_code()?;
+
+    return Ok(format!(
+        "{preamble}
+{func_code}"
+    ));
 }
 
 #[derive(Debug, PartialEq)]
@@ -397,19 +447,19 @@ impl<'a> TokensCursor<'a> {
         }
     }
 
-    fn expect_one_of(&mut self, kind: Vec<TokenKind>) -> Result<&'a Token, ParserErr> {
-        let t = self.next();
+    // fn expect_one_of(&mut self, kind: Vec<TokenKind>) -> Result<&'a Token, ParserErr> {
+    //     let t = self.next();
 
-        match t {
-            Some(t) => {
-                if kind.contains(&t.kind) {
-                    return Ok(t);
-                }
-                return Err(ParserErr(format!("Expected {:?} find {:?}", kind, t.kind)));
-            }
-            None => return Err(ParserErr(format!("Expected {:?} find EOF", kind))),
-        }
-    }
+    //     match t {
+    //         Some(t) => {
+    //             if kind.contains(&t.kind) {
+    //                 return Ok(t);
+    //             }
+    //             return Err(ParserErr(format!("Expected {:?} find {:?}", kind, t.kind)));
+    //         }
+    //         None => return Err(ParserErr(format!("Expected {:?} find EOF", kind))),
+    //     }
+    // }
 }
 
 fn ast(mut cursor: TokensCursor) -> Result<Prog, ParserErr> {
@@ -426,10 +476,18 @@ fn ast(mut cursor: TokensCursor) -> Result<Prog, ParserErr> {
 fn main() {
     let cli_args: Vec<String> = args().skip(1).collect();
     if cli_args.is_empty() {
-        eprintln!("usage: my-c-compiler [options] <input.c>");
+        eprintln!(
+            "usage: my-c-compiler
+  <input.c> [output]"
+        );
         std::process::exit(1);
     }
-    let input_path = cli_args.last().unwrap();
+    let input_path = &cli_args[0];
+    let output_path = cli_args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| input_path.strip_suffix(".c").unwrap_or(input_path).to_string());
+    let asm_path = format!("{}.s", output_path);
 
     let to_compile = fs::read_to_string(input_path)
         .expect(format!("failed to read file {}", input_path).as_ref());
@@ -444,18 +502,34 @@ fn main() {
         println!("{}", token);
     }
 
+    println!("PARSING ...",);
     let cursor = TokensCursor::new(&tokens);
-
     let ast_tree = ast(cursor).unwrap_or_else(|err| {
         eprintln!("Parser error: {}", err.0);
         std::process::exit(1);
     });
 
-    println!("PARSING ...",);
-    println!("AST TREE");
-    println!("{:?}", ast_tree);
+    // println!("AST TREE");
+    // println!("{:?}", ast_tree);
+    println!("GENERATING ...",);
 
-    // println!("Compiled:");
-    // println!("{}", compiled);
-    // fs::write("return_2.s", compiled).expect("failed to write to file");
+    let asm = generate_code(ast_tree).unwrap_or_else(|err| {
+        eprintln!("Generating error: {}", err.0);
+        std::process::exit(1);
+    });
+
+    println!("Compiled:");
+    println!("{}", asm);
+    fs::write(&asm_path, asm).expect("failed to write assembly file");
+
+    let status = Command::new("gcc")
+        .arg(&asm_path)
+        .arg("-o")
+        .arg(&output_path)
+        .status()
+        .expect("failed to run gcc");
+
+    if !status.success() {
+        std::process::exit(1);
+    }
 }

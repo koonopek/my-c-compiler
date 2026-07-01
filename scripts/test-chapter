@@ -3,11 +3,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chapter="${1:-1}"
-stage="${2:-lex}"
 
 exec "$repo_root/writing-a-c-compiler-tests/test_compiler" \
   "$repo_root/scripts/mycc" \
   --chapter "$chapter" \
-  --stage "$stage" \
+  # --stage "$stage" \
   --latest-only \
   -f
